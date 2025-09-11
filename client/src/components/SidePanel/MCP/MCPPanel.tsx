@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback } from 'react';
-import { ChevronLeft } from 'lucide-react';
+import { ChevronLeft, Trash2 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button, useToastContext } from '@librechat/client';
 import { Constants, QueryKeys } from 'librechat-data-provider';
@@ -7,18 +7,21 @@ import { useUpdateUserPluginsMutation } from 'librechat-data-provider/react-quer
 import type { TUpdateUserPlugins } from 'librechat-data-provider';
 import ServerInitializationSection from '~/components/MCP/ServerInitializationSection';
 import CustomUserVarsSection from '~/components/MCP/CustomUserVarsSection';
-import { useMCPConnectionStatusQuery } from '~/data-provider/Tools/queries';
-import BadgeRowProvider from '~/Providers/BadgeRowContext';
+import { MCPPanelProvider, useMCPPanelContext } from '~/Providers';
+import { useLocalize, useMCPConnectionStatus } from '~/hooks';
 import { useGetStartupConfig } from '~/data-provider';
 import MCPPanelSkeleton from './MCPPanelSkeleton';
-import { useLocalize } from '~/hooks';
 
 function MCPPanelContent() {
   const localize = useLocalize();
-  const { showToast } = useToastContext();
   const queryClient = useQueryClient();
+  const { showToast } = useToastContext();
+  const { conversationId } = useMCPPanelContext();
   const { data: startupConfig, isLoading: startupConfigLoading } = useGetStartupConfig();
-  const { data: connectionStatusData } = useMCPConnectionStatusQuery();
+  const { connectionStatus } = useMCPConnectionStatus({
+    enabled: !!startupConfig?.mcpServers && Object.keys(startupConfig.mcpServers).length > 0,
+  });
+
   const [selectedServerNameForEditing, setSelectedServerNameForEditing] = useState<string | null>(
     null,
   );
@@ -55,11 +58,6 @@ function MCPPanelContent() {
       },
     }));
   }, [startupConfig?.mcpServers]);
-
-  const connectionStatus = useMemo(
-    () => connectionStatusData?.connectionStatus || {},
-    [connectionStatusData?.connectionStatus],
-  );
 
   const handleServerClickToEdit = (serverName: string) => {
     setSelectedServerNameForEditing(serverName);
@@ -124,22 +122,15 @@ function MCPPanelContent() {
       );
     }
 
-    const serverStatus = connectionStatus[selectedServerNameForEditing];
+    const serverStatus = connectionStatus?.[selectedServerNameForEditing];
+    const isConnected = serverStatus?.connectionState === 'connected';
 
     return (
-      <div className="h-auto max-w-full overflow-x-hidden p-3">
-        <Button
-          variant="outline"
-          onClick={handleGoBackToList}
-          className="mb-3 flex items-center px-3 py-2 text-sm"
-        >
+      <div className="h-auto max-w-full space-y-4 overflow-x-hidden py-2">
+        <Button variant="outline" onClick={handleGoBackToList} size="sm">
           <ChevronLeft className="mr-1 h-4 w-4" />
           {localize('com_ui_back')}
         </Button>
-
-        <h3 className="mb-3 text-lg font-medium">
-          {localize('com_sidepanel_mcp_variables_for', { '0': serverBeingEdited.serverName })}
-        </h3>
 
         <div className="mb-4">
           <CustomUserVarsSection
@@ -160,6 +151,8 @@ function MCPPanelContent() {
         </div>
 
         <ServerInitializationSection
+          sidePanel={true}
+          conversationId={conversationId}
           serverName={selectedServerNameForEditing}
           requiresOAuth={serverStatus?.requiresOAuth || false}
           hasCustomUserVars={
@@ -167,15 +160,26 @@ function MCPPanelContent() {
             Object.keys(serverBeingEdited.config.customUserVars).length > 0
           }
         />
+        {serverStatus?.requiresOAuth && isConnected && (
+          <Button
+            className="w-full"
+            size="sm"
+            variant="destructive"
+            onClick={() => handleConfigRevoke(selectedServerNameForEditing)}
+          >
+            <Trash2 className="h-4 w-4" />
+            {localize('com_ui_oauth_revoke')}
+          </Button>
+        )}
       </div>
     );
   } else {
     // Server List View
     return (
-      <div className="h-auto max-w-full overflow-x-hidden p-3">
+      <div className="h-auto max-w-full overflow-x-hidden py-2">
         <div className="space-y-2">
           {mcpServerDefinitions.map((server) => {
-            const serverStatus = connectionStatus[server.serverName];
+            const serverStatus = connectionStatus?.[server.serverName];
             const isConnected = serverStatus?.connectionState === 'connected';
 
             return (
@@ -189,7 +193,7 @@ function MCPPanelContent() {
                     <span>{server.serverName}</span>
                     {serverStatus && (
                       <span
-                        className={`rounded px-2 py-0.5 text-xs ${
+                        className={`rounded-xl px-2 py-0.5 text-xs ${
                           isConnected
                             ? 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300'
                             : 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
@@ -211,8 +215,8 @@ function MCPPanelContent() {
 
 export default function MCPPanel() {
   return (
-    <BadgeRowProvider>
+    <MCPPanelProvider>
       <MCPPanelContent />
-    </BadgeRowProvider>
+    </MCPPanelProvider>
   );
 }
