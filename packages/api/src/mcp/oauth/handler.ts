@@ -181,9 +181,22 @@ export class MCPOAuthHandler {
           authorization_endpoint: config.authorization_url,
           token_endpoint: config.token_url,
           issuer: serverUrl,
-          scopes_supported: config.scope?.split(' '),
+          scopes_supported: config.scope?.split(' ') ?? [],
+          grant_types_supported: config?.grant_types_supported ?? [
+            'authorization_code',
+            'refresh_token',
+          ],
+          token_endpoint_auth_methods_supported: config?.token_endpoint_auth_methods_supported ?? [
+            'client_secret_basic',
+            'client_secret_post',
+          ],
+          response_types_supported: config?.response_types_supported ?? ['code'],
+          code_challenge_methods_supported: config?.code_challenge_methods_supported ?? [
+            'S256',
+            'plain',
+          ],
         };
-
+        logger.debug(`[MCPOAuth] metadata for "${serverName}": ${JSON.stringify(metadata)}`);
         const clientInfo: OAuthClientInformation = {
           client_id: config.client_id,
           client_secret: config.client_secret,
@@ -589,7 +602,7 @@ export class MCPOAuthHandler {
       /** Auto-discover OAuth configuration for refresh */
       const oauthMetadata = await discoverAuthorizationServerMetadata(metadata.serverUrl);
 
-      if (!oauthMetadata.token_endpoint) {
+      if (!oauthMetadata?.token_endpoint) {
         throw new Error('No token endpoint found in OAuth metadata');
       }
 
@@ -628,6 +641,70 @@ export class MCPOAuthHandler {
     } catch (error) {
       logger.error(`[MCPOAuth] Failed to refresh tokens for ${metadata.serverName}`, error);
       throw error;
+    }
+  }
+
+  /**
+   * Revokes OAuth tokens at the authorization server (RFC 7009)
+   */
+  public static async revokeOAuthToken(
+    serverName: string,
+    token: string,
+    tokenType: 'refresh' | 'access',
+    metadata: {
+      serverUrl: string;
+      clientId: string;
+      clientSecret: string;
+      revocationEndpoint?: string;
+      revocationEndpointAuthMethodsSupported?: string[];
+    },
+  ): Promise<void> {
+    // build the revoke URL, falling back to the server URL + /revoke if no revocation endpoint is provided
+    const revokeUrl: URL =
+      metadata.revocationEndpoint != null
+        ? new URL(metadata.revocationEndpoint)
+        : new URL('/revoke', metadata.serverUrl);
+
+    // detect auth method to use
+    const authMethods = metadata.revocationEndpointAuthMethodsSupported ?? [
+      'client_secret_basic', // RFC 8414 (https://datatracker.ietf.org/doc/html/rfc8414)
+    ];
+    const usesBasicAuth = authMethods.includes('client_secret_basic');
+    const usesClientSecretPost = authMethods.includes('client_secret_post');
+
+    // init the request headers
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/x-www-form-urlencoded',
+    };
+
+    // init the request body
+    const body = new URLSearchParams({ token });
+    body.set('token_type_hint', tokenType === 'refresh' ? 'refresh_token' : 'access_token');
+
+    // process auth method
+    if (usesBasicAuth) {
+      // encode the client id and secret and add to the headers
+      const credentials = Buffer.from(`${metadata.clientId}:${metadata.clientSecret}`).toString(
+        'base64',
+      );
+      headers['Authorization'] = `Basic ${credentials}`;
+    } else if (usesClientSecretPost) {
+      // add the client id and secret to the body
+      body.set('client_secret', metadata.clientSecret);
+      body.set('client_id', metadata.clientId);
+    }
+
+    // perform the revoke request
+    logger.info(`[MCPOAuth] Revoking tokens for ${serverName} via ${revokeUrl.toString()}`);
+    const response = await fetch(revokeUrl, {
+      method: 'POST',
+      body: body.toString(),
+      headers,
+    });
+
+    if (!response.ok) {
+      logger.error(`[MCPOAuth] Token revocation failed for ${serverName}: HTTP ${response.status}`);
+      throw new Error(`Token revocation failed: HTTP ${response.status}`);
     }
   }
 }
